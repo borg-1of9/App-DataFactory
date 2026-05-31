@@ -5,35 +5,33 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        perl:
-          [
-            "5.42",
-            "5.40",
-            "5.38",
-            "5.36",
-            "5.34",
-            "5.32",
-            "5.30",
-            "5.28",
-            "5.26",
-            "5.24",
-            "5.22",
-            "5.20",
-            "5.18",
-            "5.16",
-            "5.14",
-            "5.12",
-            "5.10"
-          ]
+        perl: ["5.42", "5.40", "5.38", "5.36", "5.34", "5.32", "5.30", "5.28", "5.26", "5.24", "5.22", "5.20", "5.18", "5.16", "5.14", "5.12", "5.10"]
     name: Perl ${{ matrix.perl }}
     steps:
       - uses: actions/checkout@v3
+
       - name: Setup perl
         uses: shogo82148/actions-setup-perl@v1
         with:
           perl-version: ${{ matrix.perl }}
+
+      # 1. Install mandatory Linux packages for compiled extensions (Text::CSV_XS and XML::LibXML)
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y \
+            build-essential \
+            libxml2-dev \
+            zlib1g-dev
+
+      # 2. Pre-install our essential testing framework requirement module
+      - name: Install test tools
+        run: |
+          cpanm -nq Capture::Tiny
+
+      # 3. Install all application prereqs directly using your provided cpanfile / META.json
       - name: Install dependencies
         run: cpanm -nq --installdeps --with-develop --with-recommends .
+
+      # 4. Run test execution sweeps utilizing our standardized prove tools
       - name: Run test
         run: prove -lr t
-
