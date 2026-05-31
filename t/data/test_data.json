@@ -1,0 +1,12 @@
+[
+  {
+    "device_type": "device",
+    "status": "operational",
+    "firmware": "v14.2.1"
+  },
+  {
+    "device_type": "firewall",
+    "status": "maintenance",
+    "firmware": "v3.8.9"
+  }
+]

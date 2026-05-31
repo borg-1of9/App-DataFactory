@@ -1,5 +1,5 @@
 {
-   "abstract" : "It's new $module",
+   "abstract" : "Extensible Pipeline Data Ingestion and Relational Transformation Engine",
    "author" : [
       "Vladislav Kantor <kantor.vladislav@gmail.com>"
    ],
@@ -52,7 +52,18 @@
       }
    },
    "release_status" : "unstable",
-   "version" : "0.01",
+   "resources" : {
+      "bugtracker" : {
+         "web" : "https://github.com/borg-1of9/App-DataFactory/issues"
+      },
+      "homepage" : "https://github.com/borg-1of9/App-DataFactory",
+      "repository" : {
+         "type" : "git",
+         "url" : "https://github.com/borg-1of9/App-DataFactory.git",
+         "web" : "https://github.com/borg-1of9/App-DataFactory"
+      }
+   },
+   "version" : "0.1.0",
    "x_serialization_backend" : "JSON::PP version 4.07",
    "x_static_install" : 1
 }

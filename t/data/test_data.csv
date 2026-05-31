@@ -1,0 +1,3 @@
+id1435;Main Router Base;Internal Node;DEVICE;10G-SFP;Rack A
+id1455;Edge Firewall SW;Perimeter Security;Firewall;1G-RJ45;Rack B
+id1665;Access Switch 48P;Floor Distribution;device;POE-SFP;Rack C

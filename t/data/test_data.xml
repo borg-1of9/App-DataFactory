@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<inventory>
+  <item>
+    <hw_code>id1435</hw_code>
+    <location>Prague-DataCenter-Room1</location>
+  </item>
+  <item>
+    <hw_code>id1455</hw_code>
+    <location>Prague-DataCenter-Room2</location>
+  </item>
+  <item>
+    <hw_code>id1665</hw_code>
+    <location>Ostrava-Office-ServerRoom</location>
+  </item>
+</inventory>
