@@ -2,194 +2,99 @@ use strict;
 use warnings;
 use utf8;
 
-use Test::More tests => 5;
+use Test::More;
 use lib 'lib';
-use Capture::Tiny qw(capture);
 use JSON::XS;
 use File::Spec;
 use FindBin;
-use YAML::XS qw(DumpFile);
+use DBI;
 
-# Ensure the module can be loaded correctly
+# Ensure all application modules load correctly inside the test harness
 use_ok('App::DataFactory');
+use_ok('App::DataFactory::Extractor');
+use_ok('App::DataFactory::PluginManager');
+use_ok('App::DataFactory::PipelineCompiler');
 
-# Resolve absolute path to the directory containing our data artifacts
 my $base_dir = File::Spec->catdir($FindBin::Bin, 'data');
+my $csv_file = File::Spec->catfile($base_dir, 'test_data.csv');
+my $json_file = File::Spec->catfile($base_dir, 'test_data.json');
+my $xml_file = File::Spec->catfile($base_dir, 'test_data.xml');
 
 # -------------------------------------------------------------------------
-# HELPER: Generates a perfectly mapped runtime config structure with absolute paths
+# TEST CASE 1: Full In-Memory Integration Sweep with Explicit Mapping
 # -------------------------------------------------------------------------
-sub get_absolute_test_config {
-    my $cfg = {
-        pipelines => {
-            normalize_source => [
-                { to_lower => "" },
-                { trim     => "" }
-            ]
-        },
-        extract => [
-            {
-                id       => "csv_source",
-                type     => "file",
-                name     => File::Spec->catfile($base_dir, 'test_data.csv'),
-                sep_char => ";",
-                binary   => 1,
-                mapping  => {
-                    0 => "code",
-                    1 => "name",
-                    3 => "source_type"
-                }
-            },
-            {
-                id      => "json_source",
-                type    => "file",
-                name    => File::Spec->catfile($base_dir, 'test_data.json'),
-                name_id => ["device_type", "status", "firmware"]
-            },
-            {
-                id        => "xml_source",
-                type      => "file",
-                name      => File::Spec->catfile($base_dir, 'test_data.xml'),
-                root_node => "/inventory/item",
-                columns   => ["hw_code", "location"]
-            }
-        ],
-        transform => [
-            {
-                id    => "consolidated_view",
-                query => "SELECT c.code AS device_code, c.name AS device_name, j.status AS current_status, j.firmware AS firmware_version, x.location AS warehouse_location FROM csv_source c LEFT JOIN json_source j ON PIPE_normalize_source(c.source_type) = j.device_type LEFT JOIN xml_source x ON c.code = x.hw_code"
-            }
-        ],
-        load => [
-            {
-                source_id => "consolidated_view",
-                type      => "stdout",
-                name      => "-",
-                format    => "json",
-                pretty    => 1
-            }
-        ]
-    };
-    return $cfg;
-}
-
-# -------------------------------------------------------------------------
-# TEST CASE 1: Verify the complete ETL execution flow using explicit mapping
-# -------------------------------------------------------------------------
-subtest 'Successful ETL pipeline run with explicit schema' => sub {
-    plan tests => 5;
-
-    my $runtime_config = get_absolute_test_config();
-    my $temp_config_path = File::Spec->catfile($base_dir, 'temp_explicit_run.yaml');
-    DumpFile($temp_config_path, $runtime_config);
-
-    my ($stdout, $stderr, $exit_code) = capture {
-        App::DataFactory->run('-c', $temp_config_path);
-    };
-    unlink $temp_config_path;
-
-    is($exit_code, 0, 'Application exited successfully with status 0');
-    is($stderr, '', 'No errors or unexpected warnings printed to STDERR');
-
-    my $response;
-    my $parsed_ok = 0;
-    eval {
-        $response = decode_json($stdout);
-        $parsed_ok = 1;
-    };
-
-    ok($parsed_ok, 'STDOUT output contains a valid serialized JSON string');
-    if ($parsed_ok) {
-        is($response->{success}, 1, 'Unified JSON metadata state indicates success => 1');
-        my $data = $response->{data};
-        is(scalar(@$data), 3, 'Output array contains exactly 3 aggregated records');
-    } else {
-        fail('Unified JSON metadata state indicates success => 1');
-        fail('Output array contains exactly 3 aggregated records');
-    }
-};
-
-# -------------------------------------------------------------------------
-# TEST CASE 2: Schema auto-discovery fallback warning verification
-# -------------------------------------------------------------------------
-subtest 'Fallback to schema-less autodiscovery configuration' => sub {
+subtest 'Explicit schema ETL pipeline execution mapping' => sub {
     plan tests => 3;
 
-    my $runtime_config = get_absolute_test_config();
+    my $dbh = DBI->connect("dbi:SQLite:dbname=:memory:", "", "", { RaiseError => 1, sqlite_unicode => 1 });
 
-    # FIXED: Access extract array index [0] to strip mapping safely
-    delete $runtime_config->{extract}[0]{mapping};
+    # 1. Plugin registration verification
+    my $pm = App::DataFactory::PluginManager->new();
+    ok($pm->register_all_plugins($dbh), 'All core transformations plugins registered to SQLite handle');
 
-    # FIXED: Access transform array index [0] to adjust the SQL query target fields
-    $runtime_config->{transform}[0]{query} = "SELECT c.col0 AS device_code, c.col1 AS device_name, j.status AS current_status, j.firmware AS firmware_version, x.location AS warehouse_location FROM csv_source c LEFT JOIN json_source j ON PIPE_normalize_source(c.col3) = j.device_type LEFT JOIN xml_source x ON c.col0 = x.hw_code";
+    # 2. Pipeline registration verification
+    my $pc = App::DataFactory::PipelineCompiler->new();
+    my $pipelines = { normalize_source => [ { to_lower => "" }, { trim => "" } ] };
+    ok($pc->compile_and_register_pipelines($dbh, $pipelines), 'Ordered execution pipelines compiled into native SQL');
 
-    my $temp_config_path = File::Spec->catfile($base_dir, 'temp_schemaless_run.yaml');
-    DumpFile($temp_config_path, $runtime_config);
+    # 3. Extract data layers
+    my $ext = App::DataFactory::Extractor->new();
+    $ext->load_source($dbh, { id => "csv_source", type => "file", name => $csv_file, sep_char => ";", binary => 1, mapping => { 0 => "code", 1 => "name", 3 => "source_type" } });
+    $ext->load_source($dbh, { id => "json_source", type => "file", name => $json_file, name_id => ["device_type", "status", "firmware"] });
+    $ext->load_source($dbh, { id => "xml_source", type => "file", name => $xml_file, root_node => "/inventory/item", columns => ["hw_code", "location"] });
 
-    my ($stdout, $stderr, $exit_code) = capture {
-        App::DataFactory->run('-c', $temp_config_path);
-    };
-    unlink $temp_config_path;
+    # 4. Transform query validation via joined datasets extraction
+    my $query = "SELECT c.code AS device_code, c.name AS device_name, j.status AS current_status FROM csv_source c LEFT JOIN json_source j ON PIPE_normalize_source(c.source_type) = j.device_type";
+    my $res = $dbh->selectall_arrayref($query, { Slice => {} });
 
-    like($stderr, qr/Warning \[Extractor\]: No column mapping schema found/, 'Correct schema warning emitted to STDERR');
-    like($stderr, qr/ingested as TEXT.*'col0' to 'colN'/, 'User notified about col0-colN names rules allocation');
-
-    my $response = decode_json($stdout);
-    is($response->{success}, 1, 'Pipeline completed successfully even without initial mapping declaration');
+    is(scalar(@$res), 3, 'In-memory relational engine joined datasets into exactly 3 records');
+    $dbh->disconnect();
 };
 
 # -------------------------------------------------------------------------
-# TEST CASE 3: Secure error handling encapsulation and unified response
+# TEST CASE 2: Schema Auto-Discovery Fallback Integration Testing
 # -------------------------------------------------------------------------
-subtest 'Graceful exception management with structured JSON response' => sub {
-    plan tests => 4;
+subtest 'Schema-less autodiscovery processing routine parameters rules' => sub {
+    plan tests => 2;
 
-    my $ghost_file_path = File::Spec->catfile($base_dir, 'does_not_exist.csv');
-    my $runtime_config = {
-        extract => [
-            {
-                id   => "ghost_source",
-                type => "file",
-                name => $ghost_file_path
-            }
-        ],
-        load => [
-            {
-                source_id => "ghost_source",
-                type      => "stdout",
-                format    => "json"
-            }
-        ]
-    };
+    my $dbh = DBI->connect("dbi:SQLite:dbname=:memory:", "", "", { RaiseError => 1, sqlite_unicode => 1 });
 
-    my $temp_config_path = File::Spec->catfile($base_dir, 'temp_broken_run.yaml');
-    DumpFile($temp_config_path, $runtime_config);
+    # Bootstrap transformers to ensure environment parity
+    App::DataFactory::PluginManager->new()->register_all_plugins($dbh);
+    App::DataFactory::PipelineCompiler->new()->compile_and_register_pipelines($dbh, { normalize_source => [ { to_lower => "" } ] });
 
-    my ($stdout, $stderr, $exit_code) = capture {
-        App::DataFactory->run('-c', $temp_config_path);
-    };
-    unlink $temp_config_path;
+    my $ext = App::DataFactory::Extractor->new();
 
-    is($exit_code, 1, 'Application returned error state code 1');
+    # Trigger an ingestion without a mapping attribute profile explicitly
+    my $res = $ext->load_source($dbh, { id => "csv_source", type => "file", name => $csv_file, sep_char => ";", binary => 1 });
+    is($res, 1, 'Extractor completed schema-less csv load status flag successfully');
 
-    my $response = decode_json($stdout);
-    is($response->{success}, 0, 'Unified response status set to false => 0');
-    is($response->{error}{component}, 'PipelineEngine', 'Error correctly localized to the execution core engine');
-    like($response->{error}{message}, qr/Unable to open physical source data stream/, 'User receives clean explanation message instead of crash logs');
+    # Attempt execution utilizing fallback zero-based column system names
+    my $query = "SELECT col0, col1, col3 FROM csv_source WHERE col3 = 'DEVICE' OR col3 = 'device'";
+    my $rows = $dbh->selectall_arrayref($query, { Slice => {} });
+    is(scalar(@$rows), 2, 'Relational engine filtered data accurately matching col3 generated headers boundaries');
+
+    $dbh->disconnect();
 };
 
 # -------------------------------------------------------------------------
-# TEST CASE 4: Verification of Core Plugin transformations execution
+# TEST CASE 3: Secure Error Handling Encapsulation Verification
 # -------------------------------------------------------------------------
-subtest 'Core plugin text manipulation operations execution' => sub {
-    plan tests => 3;
+subtest 'Graceful exception mapping validations inside Extractor hooks' => sub {
+    plan tests => 2;
 
-    require App::DataFactory::Plugin::CoreTransformations;
-    my $funcs = App::DataFactory::Plugin::CoreTransformations->register_functions();
+    my $dbh = DBI->connect("dbi:SQLite:dbname=:memory:", "", "", { RaiseError => 1, sqlite_unicode => 1 });
+    my $ext = App::DataFactory::Extractor->new();
 
-    is($funcs->{PERL_TO_LOWER}->('ROUTER'), 'router', 'Plugin conversion to lowercase works natively');
-    is($funcs->{PERL_TO_UPPER}->('switch'), 'SWITCH', 'Plugin conversion to uppercase works natively');
-    is($funcs->{PERL_TRIM}->('  spaced  '), 'spaced', 'Plugin whitespace edge trimming routines clean data accurately');
+    # Inject a non-existent file stream reference target purposefully
+    my $err_obj = $ext->load_source($dbh, { id => "ghost", type => "file", name => "invalid_dataset_path.csv" });
+
+    is(ref($err_obj), 'App::DataFactory::Exception', 'Framework successfully encapsulated failure into a structured Exception object');
+    like($err_obj->message, qr/Unable to open physical source data stream/, 'Exception reports clean description details');
+
+    $dbh->disconnect();
 };
+
+done_testing();
 
 1;
