@@ -7,15 +7,71 @@ use lib 'lib';
 use Capture::Tiny qw(capture);
 use JSON::XS;
 use File::Spec;
+use FindBin;
+use YAML::XS qw(DumpFile);
 
 # Ensure the module can be loaded correctly
 use_ok('App::DataFactory');
 
-# Build explicit relative paths to our mock test artifacts
-my $config_path = File::Spec->catfile('t', 'data', 'config.yaml');
-my $csv_path    = File::Spec->catfile('t', 'data', 'test_data.csv');
-my $json_path   = File::Spec->catfile('t', 'data', 'test_data.json');
-my $xml_path    = File::Spec->catfile('t', 'data', 'test_data.xml');
+# Resolve absolute path to the directory containing our data artifacts
+my $base_dir = File::Spec->catdir($FindBin::Bin, 'data');
+
+# -------------------------------------------------------------------------
+# HELPER: Generates a perfectly mapped runtime config structure with absolute paths
+# -------------------------------------------------------------------------
+sub get_absolute_test_config {
+    my $cfg = {
+        pipelines => {
+            normalize_source => [
+                { to_lower => "" },
+                { trim     => "" }
+            ]
+        },
+        extract => [
+            {
+                id       => "csv_source",
+                type     => "file",
+                name     => File::Spec->catfile($base_dir, 'test_data.csv'),
+                sep_char => ";",
+                binary   => 1,
+                mapping  => {
+                    0 => "code",
+                    1 => "name",
+                    3 => "source_type"
+                }
+            },
+            {
+                id      => "json_source",
+                type    => "file",
+                name    => File::Spec->catfile($base_dir, 'test_data.json'),
+                name_id => ["device_type", "status", "firmware"]
+            },
+            {
+                id        => "xml_source",
+                type      => "file",
+                name      => File::Spec->catfile($base_dir, 'test_data.xml'),
+                root_node => "/inventory/item",
+                columns   => ["hw_code", "location"]
+            }
+        ],
+        transform => [
+            {
+                id    => "consolidated_view",
+                query => "SELECT c.code AS device_code, c.name AS device_name, j.status AS current_status, j.firmware AS firmware_version, x.location AS warehouse_location FROM csv_source c LEFT JOIN json_source j ON PIPE_normalize_source(c.source_type) = j.device_type LEFT JOIN xml_source x ON c.code = x.hw_code"
+            }
+        ],
+        load => [
+            {
+                source_id => "consolidated_view",
+                type      => "stdout",
+                name      => "-",
+                format    => "json",
+                pretty    => 1
+            }
+        ]
+    };
+    return $cfg;
+}
 
 # -------------------------------------------------------------------------
 # TEST CASE 1: Verify the complete ETL execution flow using explicit mapping
@@ -23,15 +79,18 @@ my $xml_path    = File::Spec->catfile('t', 'data', 'test_data.xml');
 subtest 'Successful ETL pipeline run with explicit schema' => sub {
     plan tests => 5;
 
-    # Capture STDOUT, STDERR and the exit code of our main orchestrator
+    my $runtime_config = get_absolute_test_config();
+    my $temp_config_path = File::Spec->catfile($base_dir, 'temp_explicit_run.yaml');
+    DumpFile($temp_config_path, $runtime_config);
+
     my ($stdout, $stderr, $exit_code) = capture {
-        App::DataFactory->run('-c', $config_path);
+        App::DataFactory->run('-c', $temp_config_path);
     };
+    unlink $temp_config_path;
 
     is($exit_code, 0, 'Application exited successfully with status 0');
     is($stderr, '', 'No errors or unexpected warnings printed to STDERR');
 
-    # Parse the unified response matrix
     my $response;
     my $parsed_ok = 0;
     eval {
@@ -40,11 +99,14 @@ subtest 'Successful ETL pipeline run with explicit schema' => sub {
     };
 
     ok($parsed_ok, 'STDOUT output contains a valid serialized JSON string');
-    is($response->{success}, 1, 'Unified JSON metadata state indicates success => 1');
-    diag("DEBUG PIPELINE ERROR MESSAGE: " . $response->{error}{message}) if !$response->{success};
-    # Verify the structure and content of our joined database rows
-    my $data = $response->{data};
-    is(scalar(@$data), 3, 'Output array contains exactly 3 aggregated records');
+    if ($parsed_ok) {
+        is($response->{success}, 1, 'Unified JSON metadata state indicates success => 1');
+        my $data = $response->{data};
+        is(scalar(@$data), 3, 'Output array contains exactly 3 aggregated records');
+    } else {
+        fail('Unified JSON metadata state indicates success => 1');
+        fail('Output array contains exactly 3 aggregated records');
+    }
 };
 
 # -------------------------------------------------------------------------
@@ -53,39 +115,27 @@ subtest 'Successful ETL pipeline run with explicit schema' => sub {
 subtest 'Fallback to schema-less autodiscovery configuration' => sub {
     plan tests => 3;
 
-    # Create a temporary modified config file missing the mapping field block
-        my $temp_config_path = File::Spec->catfile('t', 'data', 'temp_schemaless_config.yaml');
+    my $runtime_config = get_absolute_test_config();
 
-        open my $in_fh, '<:encoding(utf8)', $config_path or die $!;
-        open my $out_fh, '>:encoding(utf8)', $temp_config_path or die $!;
-        while (<$in_fh>) {
-            # 1. Dynamically strip the mapping definition lines for the csv source block
-            next if /^\s+mapping:/ .. /^\s+source_type:/; # Strip up to the last mapping key cleanly
+    # FIXED: Access extract array index [0] to strip mapping safely
+    delete $runtime_config->{extract}[0]{mapping};
 
-            # 2. FIXED: Rewrite the SQL query on the fly to use correct auto-generated column positions
-            s/c\.source_type/c.col3/g; # Index 3 becomes col3 (DEVICE)
-            s/c\.code/c.col0/g;        # Index 0 becomes col0 (id1435)
+    # FIXED: Access transform array index [0] to adjust the SQL query target fields
+    $runtime_config->{transform}[0]{query} = "SELECT c.col0 AS device_code, c.col1 AS device_name, j.status AS current_status, j.firmware AS firmware_version, x.location AS warehouse_location FROM csv_source c LEFT JOIN json_source j ON PIPE_normalize_source(c.col3) = j.device_type LEFT JOIN xml_source x ON c.col0 = x.hw_code";
 
-            print $out_fh $_;
-        }
-        close $in_fh;
-        close $out_fh;
-
+    my $temp_config_path = File::Spec->catfile($base_dir, 'temp_schemaless_run.yaml');
+    DumpFile($temp_config_path, $runtime_config);
 
     my ($stdout, $stderr, $exit_code) = capture {
         App::DataFactory->run('-c', $temp_config_path);
     };
-
-    # Clean up the temporary testing asset file from disk immediately
     unlink $temp_config_path;
 
-    # Check that our Extractor module successfully triggered the STDERR alerts
     like($stderr, qr/Warning \[Extractor\]: No column mapping schema found/, 'Correct schema warning emitted to STDERR');
     like($stderr, qr/ingested as TEXT.*'col0' to 'colN'/, 'User notified about col0-colN names rules allocation');
 
     my $response = decode_json($stdout);
     is($response->{success}, 1, 'Pipeline completed successfully even without initial mapping declaration');
-    diag("DEBUG SCHEMA-LESS ERROR: " . $response->{error}{message}) if !$response->{success};
 };
 
 # -------------------------------------------------------------------------
@@ -94,26 +144,31 @@ subtest 'Fallback to schema-less autodiscovery configuration' => sub {
 subtest 'Graceful exception management with structured JSON response' => sub {
     plan tests => 4;
 
-    # Create a broken config targeting a non-existent CSV data source file
-    my $broken_config_path = File::Spec->catfile('t', 'data', 'temp_broken_config.yaml');
-    open my $out_fh, '>:encoding(utf8)', $broken_config_path or die $!;
-    print $out_fh <<'EOF';
----
-extract:
-  - id: "ghost_source"
-    type: "file"
-    name: "t/data/does_not_exist.csv"
-load:
-  - source_id: "ghost_source"
-    type: "stdout"
-    format: "json"
-EOF
-    close $out_fh;
+    my $ghost_file_path = File::Spec->catfile($base_dir, 'does_not_exist.csv');
+    my $runtime_config = {
+        extract => [
+            {
+                id   => "ghost_source",
+                type => "file",
+                name => $ghost_file_path
+            }
+        ],
+        load => [
+            {
+                source_id => "ghost_source",
+                type      => "stdout",
+                format    => "json"
+            }
+        ]
+    };
+
+    my $temp_config_path = File::Spec->catfile($base_dir, 'temp_broken_run.yaml');
+    DumpFile($temp_config_path, $runtime_config);
 
     my ($stdout, $stderr, $exit_code) = capture {
-        App::DataFactory->run('-c', $broken_config_path);
+        App::DataFactory->run('-c', $temp_config_path);
     };
-    unlink $broken_config_path;
+    unlink $temp_config_path;
 
     is($exit_code, 1, 'Application returned error state code 1');
 

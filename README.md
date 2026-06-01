@@ -1,6 +1,11 @@
+[![Actions Status](https://github.com/borg-1of9/App-DataFactory/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/borg-1of9/App-DataFactory/actions?workflow=test)
+# NAME
+
+App::DataFactory - Extensible Pipeline Data Ingestion and Relational Transformation Engine
+
 # App::DataFactory
 
-App::DataFactory is a highly-extensible, secure, and blazing-fast data engineering command-line utility and library written in Perl. It safely ingests diverse, multi-format raw datasets (CSV, JSON, XML, MessagePack) or live streams into an ephemeral, memory-mapped SQLite database workspace. 
+App::DataFactory is a highly-extensible, secure, and blazing-fast data engineering command-line utility and library written in Perl. It safely ingests diverse, multi-format raw datasets (CSV, JSON, XML, MessagePack) or live streams into an ephemeral, memory-mapped SQLite database workspace.
 
 Custom data-cleansing pipelines declared in configuration files are dynamically compiled into native SQL functions, enabling complex relational transformations, multi-source `JOIN` operations, and schema filtering on a single execution pass.
 
@@ -103,11 +108,12 @@ extract:
     root_node: "/inventory/item"
     columns: ["hw_code", "location"]
 
+
 # 3. TRANSFORM: Ephemeral relational schema manipulation queries
 transform:
   - id: "consolidated_view"
     query: >
-      SELECT 
+      SELECT
         c.code AS device_code,
         c.name AS device_name,
         j.status AS current_status,
@@ -141,7 +147,7 @@ If the `mapping` or `columns` fields are completely omitted inside an `extract` 
 transform:
   - id: "dynamic_view"
     query: >
-      SELECT 
+      SELECT
         col0 AS record_id,
         CAST(col2 AS INTEGER) * 1.21 AS vat_price
       FROM raw_logs
@@ -274,14 +280,13 @@ docker run --rm -v $(pwd)/t/data:/data borg-1of9/datafactory:latest --config /da
 cat t/data/monolithic_payload.json | docker run -i --rm borg-1of9/datafactory:latest
 ```
 
----
+# LICENSE
 
-## Author
+Copyright (C) Vladislav Kantor.
+
+This library is free software; you can redistribute it and/or modify
+it under the same terms as Perl itself.
+
+# AUTHOR
 
 Vladislav Kantor <kantor.vladislav@gmail.com>
-
-## Copyright and License
-
-This software is copyright (c) 2026 by Vladislav Kantor.
-
-This framework code structure is licensed under the Artistic License 2.0 (identical to Perl language core definitions distribution).
