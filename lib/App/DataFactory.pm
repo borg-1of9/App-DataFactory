@@ -18,40 +18,42 @@ use App::DataFactory::PipelineCompiler;
 use App::DataFactory::Extractor;
 use App::DataFactory::Metadata;
 
-our $VERSION = "0.1.0";
+our $VERSION = "0.2.0";
 
 # Main application orchestrator entry point
 sub run {
     my ($class, @args) = @_;
 
-    # Ensure CLI interface terminals handle standard Unicode streams
+    # Ensure CLI interface terminals handle standard Unicode streams smoothly
     binmode(STDOUT, ":utf8");
     binmode(STDERR, ":utf8");
 
     # 1. Parsing Command Line Option Configurations
     my %opts = (
-        config => undef,
-        help   => 0,
+        config  => undef,
+        help    => 0,
+        version => 0,
     );
 
     GetOptionsFromArray(
         \@args,
         'c|config=s' => \$opts{config},
-        'v|version' => \$opts{version},
         'h|help'     => \$opts{help},
+        'v|version'  => \$opts{version},
     ) or do {
         pod2usage(-exitval => 2, -verbose => 0, -input => __FILE__);
     };
 
+    if ($opts{help}) {
+        pod2usage(-exitval => 0, -verbose => 1, -input => __FILE__);
+    }
+
+    # Immediate release signature dispatch switch logic
     if ($opts{version}) {
         my $meta = App::DataFactory::Metadata->get_release_info();
         printf("App::DataFactory version %s (%s, build status: %s)\n",
             $meta->{version}, $meta->{release_date}, $meta->{status});
         return 0;
-    }
-
-    if ($opts{help}) {
-        pod2usage(-exitval => 0, -verbose => 1, -input => __FILE__);
     }
 
     # Declare runtime contextual placeholders
@@ -74,24 +76,63 @@ sub run {
 
     # 2. Determine configuration delivery stream mechanics
     if (!defined $opts{config}) {
-        # -t STDIN checks if the standard input is interactive (connected to a terminal/keyboard)
         if (-t STDIN) {
-            # User launched the binary without arguments and without piping any data.
-            # Show the usage manual help screen immediately and exit cleanly.
+            # Interactive shell execution with no options -> render usage guides
             pod2usage(-exitval => 0, -verbose => 1, -input => __FILE__);
             return 0;
         }
+        $is_pure_stdin_mode = 1;
+    }
 
-        # If STDIN is NOT interactive, it means data is being piped in (e.g., cat data | datafactory)
-        if (!-t STDIN) {
-            $is_pure_stdin_mode = 1;
-        } else {
-            $exit_status = 1;
-            $response_payload->{success} = 0;
-            $response_payload->{error} = {
-                component => 'Core',
-                message   => "Missing configuration file parameter (--config) and no data found on STDIN."
+    # 3. Load configurations safely utilizing Try::Tiny
+    if ($exit_status == 0) {
+        if ($is_pure_stdin_mode) {
+            try {
+                local $/; # Enable slurp reading mode
+                my $raw_stdin = <STDIN>;
+                my $monolithic_payload = decode_json($raw_stdin);
+
+                # Deconstruct the dynamic streaming packet payload wrapper structures
+                $config = $monolithic_payload->{config};
+                $config->{_inline_data_payload} = $monolithic_payload->{data};
+            } catch {
+                $exit_status = 1;
+                $response_payload->{success} = 0;
+                $response_payload->{error} = {
+                    component => 'Core',
+                    message   => "Failed to decode monolithic streaming setup matrix from STDIN: $_"
+                };
             };
+        } else {
+            if (!-e $opts{config}) {
+                $exit_status = 1;
+                $response_payload->{success} = 0;
+                $response_payload->{error} = {
+                    component => 'Core',
+                    message   => "Specified configuration blueprint path '$opts{config}' does not exist."
+                };
+            } else {
+                try {
+                    # FIXED: Added the missing assignment file ingestion routine binding
+                    $config = LoadFile($opts{config});
+
+                    if (!defined $config || (ref($config) eq 'HASH' && !%$config)) {
+                        $exit_status = 1;
+                        $response_payload->{success} = 0;
+                        $response_payload->{error} = {
+                            component => 'Core',
+                            message   => "The specified configuration file '$opts{config}' is empty or unparseable."
+                        };
+                    }
+                } catch {
+                    $exit_status = 1;
+                    $response_payload->{success} = 0;
+                    $response_payload->{error} = {
+                        component => 'Core',
+                        message   => "YAML configuration blueprint parsing validation failure: $_"
+                    };
+                };
+            }
         }
     }
 
@@ -131,14 +172,16 @@ sub run {
                 my $extractor = App::DataFactory::Extractor->new();
                 foreach my $source_node (@{$config->{extract}}) {
 
-                    # If monolithic stream contains internal records payload array, override processing context
+                    my $extract_res;
+
+                    # Check if monolithic streaming environment has passed inline data arrays inside payload
                     if ($is_pure_stdin_mode && exists $config->{_inline_data_payload}{$source_node->{id}}) {
-                        # Temporarily dump inline data to structure for extractor compatibility
-                        # (Will be fully integrated with direct stream feeds later)
-                        next;
+                        my $inline_data = $config->{_inline_data_payload}{$source_node->{id}};
+                        $extract_res = $extractor->load_inline_json_source($dbh, $source_node, $inline_data);
+                    } else {
+                        $extract_res = $extractor->load_source($dbh, $source_node);
                     }
 
-                    my $extract_res = $extractor->load_source($dbh, $source_node);
                     if (ref($extract_res) eq 'App::DataFactory::Exception') {
                         die $extract_res->as_string;
                     }
@@ -161,17 +204,22 @@ sub run {
                 }
             }
 
-            # 9. LOAD PHASE: Parse configuration profiles for serialization stage
+            # 9. LOAD PHASE: Retrieve records from compiled transformation view
             if (defined $config->{load} && ref($config->{load}) eq 'ARRAY' && @{$config->{load}}) {
-                my $load_node = $config->{load}[0]; # Fix: Target the first configuration profile element explicitly
+                my $load_node = $config->{load}->[0]; # FIXED: Access element index 0 explicitly
+
                 $target_format = lc($load_node->{format} // 'json');
                 $target_type   = lc($load_node->{type}   // 'stdout');
                 $target_name   = $load_node->{name}      // '-';
                 $pretty_print  = $load_node->{pretty}    // 0;
 
                 my $source_id = $load_node->{source_id};
-                my $fetch_sql = sprintf("SELECT * FROM %s", $dbh->quote_identifier($source_id));
-                $response_payload->{data} = $dbh->selectall_arrayref($fetch_sql, { Slice => {} });
+                if (defined $source_id) {
+                    my $fetch_sql = sprintf("SELECT * FROM %s", $dbh->quote_identifier($source_id));
+                    $response_payload->{data} = $dbh->selectall_arrayref($fetch_sql, { Slice => {} });
+                } else {
+                    die "Missing 'source_id' parameter configuration inside the load profile block descriptor.";
+                }
             }
 
         } catch {
@@ -201,33 +249,29 @@ sub run {
         # Fallback to standard clean JSON serialization formats
         my $json_engine = JSON::XS->new->utf8;
         $json_engine->pretty(1) if $pretty_print;
-        $encoded_stream = $json_engine->encode($response_payload);
-    }
-
-    # Stream the encoded block out to the designated destination target channels
-    if ($target_type eq 'stdout' || $target_name eq '-') {
-        if ($target_format eq 'msgpack') {
-            binmode(STDOUT, ':raw'); # Guard binary stream alignment for messagepack payloads
-        } else {
+        $encoded_stream = $json_engine->encode($response_payload);}
+        # Stream the encoded block out to the designated destination target channels
+        if ($target_type eq 'stdout' || $target_name eq '-') {
+          if ($target_format eq 'msgpack') {
+            binmode(STDOUT, ':raw');
+          } else {
             binmode(STDOUT, ':utf8');
-        }
-        print STDOUT $encoded_stream;
-    } else {
-        open my $out_fh, ">", $target_name or do {
+          }
+          print STDOUT $encoded_stream;
+        } else {
+          open my $out_fh, ">", $target_name or do {
             print STDERR "Error [Core]: Cannot write output file target channel '$target_name': $!\n";
             return 1;
-        };
-        if ($target_format eq 'msgpack') {
+          };
+          if ($target_format eq 'msgpack') {
             binmode($out_fh, ':raw');
-        } else {
+          } else {
             binmode($out_fh, ':encoding(utf8)');
+          }
+          print $out_fh $encoded_stream;close $out_fh;
         }
-        print $out_fh $encoded_stream;
-        close $out_fh;
-    }
-
-    return $exit_status;
-}
+        return $exit_status;
+      }
 
 1;
 
