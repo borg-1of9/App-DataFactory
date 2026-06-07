@@ -71,7 +71,7 @@
          "web" : "https://github.com/borg-1of9/App-DataFactory"
       }
    },
-   "version" : "0.1.0",
+   "version" : "0.2.0",
    "x_serialization_backend" : "JSON::PP version 4.07",
    "x_static_install" : 1
 }

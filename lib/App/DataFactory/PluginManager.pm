@@ -6,7 +6,7 @@ use utf8;
 use Module::Load; # Standard clean module dynamic loader
 use App::DataFactory::Exception;
 
-our $VERSION = "0.1.0";
+our $VERSION = "0.2.0";
 
 sub new {
     my ($class) = @_;

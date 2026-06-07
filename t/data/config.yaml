@@ -1,35 +1,34 @@
 ---
-# 1. Pipelines remain as the definition of custom functional blocks
 pipelines:
   normalize_source:
     - to_lower: ""
     - trim: ""
 
-# 2. EXTRACT: Where data comes from (Replaces "file.in")
 extract:
   - id: "csv_source"
     type: "file"
     name: "t/data/test_data.csv"
     sep_char: ";"
     binary: true
-    # Much cleaner than separate arrays: index maps directly to your SQL column ID
     mapping:
       0: "code"
       1: "name"
       3: "source_type"
+    indexes:
+      - "code"
+      - "source_type"
 
   - id: "json_source"
     type: "file"
     name: "t/data/test_data.json"
-    columns: ["device_type", "status", "firmware"] # For JSON, these are keys
+    name_id: ["device_type", "status", "firmware"]
 
   - id: "xml_source"
-    type: "file" # "stream" clearly indicates STDIN
+    type: "file"
     name: "t/data/test_data.xml"
     root_node: "/inventory/item"
     columns: ["hw_code", "location"]
 
-# 3. TRANSFORM: In-memory SQL processing and relational operations (Replaces "tmp")
 transform:
   - id: "consolidated_view"
     query: >
@@ -43,9 +42,9 @@ transform:
       LEFT JOIN json_source j ON PIPE_normalize_source(c.source_type) = j.device_type
       LEFT JOIN xml_source x ON c.code = x.hw_code
 
-# 4. LOAD: Where data goes (Replaces "file.out")
 load:
-  - source_id: "consolidated_view" # References the transformation ID above
-    type: "stdout" # "stdout" or "file"
-    format: "json" # "json", "csv", "xml", "msgpack"
+  - source_id: "consolidated_view"
+    type: "stdout"
+    name: "-"
+    format: "json"
     pretty: true

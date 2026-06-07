@@ -29,3 +29,5 @@ cover_db/
 MYMETA.*
 
 /App-DataFactory-*
+/.agents/
+/PROJECT_CONTEXT.md

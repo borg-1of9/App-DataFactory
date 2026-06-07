@@ -4,7 +4,7 @@ use strict;
 use warnings;
 use utf8;
 
-our $VERSION = "0.1.0";
+our $VERSION = "0.2.0";
 
 # Constructor for the exception object
 sub new {

@@ -318,6 +318,7 @@ graph TD
 1. **Extract**: Parses external file descriptors or memory pipes into memory tables. Employs binding execution placeholders (`?`) across all ingest queries to completely eliminate SQL Injection threats.
 2. **Transform**: Registers reusable ordered functional pipeline chains or plugin components into the virtual database environment as standard SQL routines (`PIPE_*`) before running raw relational schema modifications.
 3. **Load**: Serializes structured response matrices containing automated execution telemetry, operational status, and records collections out to files or `STDOUT`.
+4. **Indexing**: Automatically creates B-Tree indexes for specified columns to optimize query performance.
 
 ---
 
