@@ -8,7 +8,7 @@ use JSON::XS;
 use XML::LibXML;
 use App::DataFactory::Exception;
 
-our $VERSION = "0.1.0";
+our $VERSION = "0.2.0";
 
 # Constructor for the extraction component
 sub new {
@@ -137,6 +137,31 @@ sub _import_csv {
     $dbh->commit;
     close $fh;
 
+    # Build indexes for the table
+    $self->_build_indexes($dbh, $source);
+
+    return 1;
+}
+
+sub _build_indexes {
+    my ($self, $dbh, $source) = @_;
+    my $id = $source->{id};
+
+    # Get column information from the table
+    my $columns = $dbh->selectcol_arrayref("PRAGMA table_info(" . $dbh->quote_identifier($id) . ")");
+
+    # Create a B-Tree index for each column
+    foreach my $column (@$columns) {
+        my $index_sql = sprintf("CREATE INDEX idx_%s_%s ON %s (%s)", $id, $column, $dbh->quote_identifier($id), $dbh->quote_identifier($column));
+        eval { $dbh->do($index_sql); };
+        if ($@) {
+            return App::DataFactory::Exception->new(
+                component => 'Extractor',
+                message   => "Failed to create index on column '$column' for table '$id': $@"
+            );
+        }
+    }
+
     return 1;
 }
 
@@ -200,6 +225,7 @@ sub _import_json {
     );
     my $sth = $dbh->prepare($insert_sql);
 
+    # Execute transactional block insertion routines
     $dbh->begin_work;
     foreach my $row_record (@$records) {
         next unless ref($row_record) eq 'HASH';
@@ -207,6 +233,9 @@ sub _import_json {
         $sth->execute(@bind_values);
     }
     $dbh->commit;
+
+    # Build indexes for the table
+    $self->_build_indexes($dbh, $source);
 
     return 1;
 }
@@ -257,6 +286,7 @@ sub _import_xml {
     );
     my $sth = $dbh->prepare($insert_sql);
 
+    # Execute transactional block insertion routines
     $dbh->begin_work;
     foreach my $node (@nodes) {
         my @bind_values;
@@ -269,6 +299,9 @@ sub _import_xml {
         $sth->execute(@bind_values);
     }
     $dbh->commit;
+
+    # Build indexes for the table
+    $self->_build_indexes($dbh, $source);
 
     return 1;
 }

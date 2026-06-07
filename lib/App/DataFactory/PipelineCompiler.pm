@@ -5,7 +5,7 @@ use warnings;
 use utf8;
 use App::DataFactory::Exception;
 
-our $VERSION = "0.1.0";
+our $VERSION = "0.2.0";
 
 sub new {
     my ($class) = @_;

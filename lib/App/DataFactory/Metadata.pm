@@ -4,7 +4,7 @@ use strict;
 use warnings;
 use utf8;
 
-our $VERSION = "0.1.0";
+our $VERSION = "0.2.0";
 
 # Returns a structural snapshot representation of the current application release lifecycle state
 sub get_release_info {
