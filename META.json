@@ -72,6 +72,9 @@
       }
    },
    "version" : "0.2.0",
+   "x_contributors" : [
+      "borg-1of9 <84677854+borg-1of9@users.noreply.github.com>"
+   ],
    "x_serialization_backend" : "JSON::PP version 4.07",
    "x_static_install" : 1
 }

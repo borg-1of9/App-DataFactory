@@ -7,6 +7,7 @@ This document outlines the planned milestones, future architecture enhancements,
 ## Milestone 1: Performance Optimization & Storage Affinities (Current Focus)
 *Target Release: v0.3.0*
 
+- [x] Implement flexible output format(e.g. `json`, `msgpack`, `csv`, `xml`, `yaml`) options inside `App::DataFactory`
 - [ ] Implement Multi-Column/Composite Database Index Support inside `App::DataFactory::Extractor`
 - [ ] Support index configuration for arrays of columns (e.g., `indexes: [ ["code", "source_type"] ]`)
 - [ ] Integrate volatile database memory cache eviction and release mechanisms via `sqlite_db_config`

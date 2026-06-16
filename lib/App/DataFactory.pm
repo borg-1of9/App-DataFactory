@@ -18,264 +18,349 @@ use App::DataFactory::PipelineCompiler;
 use App::DataFactory::Extractor;
 use App::DataFactory::Metadata;
 
-our $VERSION = "0.2.0";
+use Encode;
+use IO::Handle;
+STDOUT->autoflush(1);
+
+our $VERSION = "0.2.1";
 
 # Main application orchestrator entry point
 sub run {
-    my ($class, @args) = @_;
+  my ($class, @args) = @_;
 
-    # Ensure CLI interface terminals handle standard Unicode streams smoothly
-    binmode(STDOUT, ":utf8");
-    binmode(STDERR, ":utf8");
+  # Ensure CLI interface terminals handle standard Unicode streams smoothly
+  binmode(STDOUT, ":utf8");
+  binmode(STDERR, ":utf8");
 
-    # 1. Parsing Command Line Option Configurations
-    my %opts = (
-        config  => undef,
-        help    => 0,
-        version => 0,
-    );
+  # 1. Parsing Command Line Option Configurations
+  my %opts = (
+    config  => undef,
+    help    => 0,
+    version => 0,
+  );
 
-    GetOptionsFromArray(
-        \@args,
-        'c|config=s' => \$opts{config},
-        'h|help'     => \$opts{help},
-        'v|version'  => \$opts{version},
-    ) or do {
-        pod2usage(-exitval => 2, -verbose => 0, -input => __FILE__);
-    };
+  GetOptionsFromArray(
+    \@args,
+    'c|config=s' => \$opts{config},
+    'h|help'     => \$opts{help},
+    'v|version'  => \$opts{version},
+  ) or do {
+    pod2usage(-exitval => 2, -verbose => 0, -input => __FILE__);
+  };
 
-    if ($opts{help}) {
-        pod2usage(-exitval => 0, -verbose => 1, -input => __FILE__);
+  if ($opts{help}) {
+    pod2usage(-exitval => 0, -verbose => 1, -input => __FILE__);
+  }
+
+  # Immediate release signature dispatch switch logic
+  if ($opts{version}) {
+    my $meta = App::DataFactory::Metadata->get_release_info();
+    printf("App::DataFactory version %s (%s, build status: %s)\n", $meta->{version}, $meta->{release_date}, $meta->{status});
+    return 0;
+  }
+
+  # Declare runtime contextual placeholders
+  my $config;
+  my $is_pure_stdin_mode = 0;
+  my $exit_status = 0;
+
+  # Initialize a unified metadata payload container for structured M2M communication
+  my $response_payload = {
+    success => 1,
+    error   => undef,
+    data    => undef,
+  };
+
+  # Default fallback target routing parameters
+  my $target_format  = 'json';
+  my $target_type    = 'stdout';
+  my $target_name    = '-';
+  my $pretty_print   = 0;
+  my $target_layout  = 'object';
+  my $encoded_stream = undef;
+
+  # 2. Determine configuration delivery stream mechanics
+  if (!defined $opts{config}) {
+    if (-t STDIN) {
+      # Interactive shell execution with no options -> render usage guides
+      pod2usage(-exitval => 0, -verbose => 1, -input => __FILE__);
+      return 0;
     }
+    $is_pure_stdin_mode = 1;
+  }
 
-    # Immediate release signature dispatch switch logic
-    if ($opts{version}) {
-        my $meta = App::DataFactory::Metadata->get_release_info();
-        printf("App::DataFactory version %s (%s, build status: %s)\n",
-            $meta->{version}, $meta->{release_date}, $meta->{status});
-        return 0;
-    }
+  # 3. Load configurations safely utilizing Try::Tiny
+  if ($exit_status == 0) {
+    if ($is_pure_stdin_mode) {
+      try {
+        local $/; # Enable slurp reading mode
+        my $raw_stdin = <STDIN>;
+        my $monolithic_payload = decode_json($raw_stdin);
 
-    # Declare runtime contextual placeholders
-    my $config;
-    my $is_pure_stdin_mode = 0;
-    my $exit_status = 0;
-
-    # Initialize a unified metadata payload container for structured M2M communication
-    my $response_payload = {
-        success => 1,
-        error   => undef,
-        data    => undef,
-    };
-
-    # Default fallback target routing parameters
-    my $target_format = 'json';
-    my $target_type   = 'stdout';
-    my $target_name   = '-';
-    my $pretty_print  = 0;
-
-    # 2. Determine configuration delivery stream mechanics
-    if (!defined $opts{config}) {
-        if (-t STDIN) {
-            # Interactive shell execution with no options -> render usage guides
-            pod2usage(-exitval => 0, -verbose => 1, -input => __FILE__);
-            return 0;
-        }
-        $is_pure_stdin_mode = 1;
-    }
-
-    # 3. Load configurations safely utilizing Try::Tiny
-    if ($exit_status == 0) {
-        if ($is_pure_stdin_mode) {
-            try {
-                local $/; # Enable slurp reading mode
-                my $raw_stdin = <STDIN>;
-                my $monolithic_payload = decode_json($raw_stdin);
-
-                # Deconstruct the dynamic streaming packet payload wrapper structures
-                $config = $monolithic_payload->{config};
-                $config->{_inline_data_payload} = $monolithic_payload->{data};
-            } catch {
-                $exit_status = 1;
-                $response_payload->{success} = 0;
-                $response_payload->{error} = {
-                    component => 'Core',
-                    message   => "Failed to decode monolithic streaming setup matrix from STDIN: $_"
-                };
-            };
-        } else {
-            if (!-e $opts{config}) {
-                $exit_status = 1;
-                $response_payload->{success} = 0;
-                $response_payload->{error} = {
-                    component => 'Core',
-                    message   => "Specified configuration blueprint path '$opts{config}' does not exist."
-                };
-            } else {
-                try {
-                    # FIXED: Added the missing assignment file ingestion routine binding
-                    $config = LoadFile($opts{config});
-
-                    if (!defined $config || (ref($config) eq 'HASH' && !%$config)) {
-                        $exit_status = 1;
-                        $response_payload->{success} = 0;
-                        $response_payload->{error} = {
-                            component => 'Core',
-                            message   => "The specified configuration file '$opts{config}' is empty or unparseable."
-                        };
-                    }
-                } catch {
-                    $exit_status = 1;
-                    $response_payload->{success} = 0;
-                    $response_payload->{error} = {
-                        component => 'Core',
-                        message   => "YAML configuration blueprint parsing validation failure: $_"
-                    };
-                };
-            }
-        }
-    }
-
-    # 4. Initialize virtual database workspace and execute processing pipelines
-    if ($exit_status == 0) {
-        my $dbh;
+        # Deconstruct the dynamic streaming packet payload wrapper structures
+        $config = $monolithic_payload->{config};
+        $config->{_inline_data_payload} = $monolithic_payload->{data};
+      } catch {
+        $exit_status = 1;
+        $response_payload->{success} = 0;
+        $response_payload->{error} = {
+          component => 'Core',
+          message   => "Failed to decode monolithic streaming setup matrix from STDIN: $_"
+        };
+      };
+    } else {
+      if (!-e $opts{config}) {
+        $exit_status = 1;
+        $response_payload->{success} = 0;
+        $response_payload->{error} = {
+          component => 'Core',
+          message   => "Specified configuration blueprint path '$opts{config}' does not exist."
+        };
+      } else {
         try {
-            # Spin up the volatile relational scratchpad environment
-            $dbh = DBI->connect(
-                "dbi:SQLite:dbname=:memory:", "", "",
-                {
-                    RaiseError     => 1, # Throws exceptions handled natively via Try::Tiny
-                    PrintError     => 0, # Quiet down core logging channels to prevent interface noise
-                    AutoCommit     => 1,
-                    sqlite_unicode => 1, # Force native multi-byte encoding configurations
-                }
-            );
-
-            # 5. Connect and initialize extension plugins workspace functions
-            my $plugin_mgr = App::DataFactory::PluginManager->new();
-            my $plugin_res = $plugin_mgr->register_all_plugins($dbh);
-            if (ref($plugin_res) eq 'App::DataFactory::Exception') {
-                die $plugin_res->as_string;
-            }
-
-            # 6. Chain custom transformation structures into memory-mapped pipeline routes
-            if (defined $config->{pipelines}) {
-                my $compiler = App::DataFactory::PipelineCompiler->new();
-                my $compile_res = $compiler->compile_and_register_pipelines($dbh, $config->{pipelines});
-                if (ref($compile_res) eq 'App::DataFactory::Exception') {
-                    die $compile_res->as_string;
-                }
-            }
-
-            # 7. EXTRACT PHASE: Populate database structures using secure parameters bindings
-            if (defined $config->{extract}) {
-                my $extractor = App::DataFactory::Extractor->new();
-                foreach my $source_node (@{$config->{extract}}) {
-
-                    my $extract_res;
-
-                    # Check if monolithic streaming environment has passed inline data arrays inside payload
-                    if ($is_pure_stdin_mode && exists $config->{_inline_data_payload}{$source_node->{id}}) {
-                        my $inline_data = $config->{_inline_data_payload}{$source_node->{id}};
-                        $extract_res = $extractor->load_inline_json_source($dbh, $source_node, $inline_data);
-                    } else {
-                        $extract_res = $extractor->load_source($dbh, $source_node);
-                    }
-
-                    if (ref($extract_res) eq 'App::DataFactory::Exception') {
-                        die $extract_res->as_string;
-                    }
-                }
-            }
-
-            # 8. TRANSFORM PHASE: Run declarative relational workspace mapping transformations
-            if (defined $config->{transform}) {
-                foreach my $transform_node (@{$config->{transform}}) {
-                    my $table_id  = $transform_node->{id};
-                    my $sql_query = $transform_node->{query};
-
-                    # Safely compile a destination view table out of custom processing definitions
-                    my $composed_sql = sprintf(
-                        "CREATE TABLE %s AS %s",
-                        $dbh->quote_identifier($table_id),
-                        $sql_query
-                    );
-                    $dbh->do($composed_sql);
-                }
-            }
-
-            # 9. LOAD PHASE: Retrieve records from compiled transformation view
-            if (defined $config->{load} && ref($config->{load}) eq 'ARRAY' && @{$config->{load}}) {
-                my $load_node = $config->{load}->[0]; # FIXED: Access element index 0 explicitly
-
-                $target_format = lc($load_node->{format} // 'json');
-                $target_type   = lc($load_node->{type}   // 'stdout');
-                $target_name   = $load_node->{name}      // '-';
-                $pretty_print  = $load_node->{pretty}    // 0;
-
-                my $source_id = $load_node->{source_id};
-                if (defined $source_id) {
-                    my $fetch_sql = sprintf("SELECT * FROM %s", $dbh->quote_identifier($source_id));
-                    $response_payload->{data} = $dbh->selectall_arrayref($fetch_sql, { Slice => {} });
-                } else {
-                    die "Missing 'source_id' parameter configuration inside the load profile block descriptor.";
-                }
-            }
-
-        } catch {
-            # Catch global execution runtime anomalies and format them into the payload error response
+          $config = LoadFile($opts{config});
+          if (!defined $config || (ref($config) eq 'HASH' && !%$config)) {
             $exit_status = 1;
             $response_payload->{success} = 0;
-            $response_payload->{error}   = {
-                component => 'PipelineEngine',
-                message   => "$_"
+            $response_payload->{error} = {
+              component => 'Core',
+              message   => "The specified configuration file '$opts{config}' is empty or unparseable."
             };
-        };
-
-        # 10. Memory cleanups and structural connection disengagements
-        if (defined $dbh) {
-            $dbh->disconnect();
-        }
-    }
-
-    # 11. UNIFIED SERIALIZATION PHASE: Output either structured payload OR packed error matrix
-    my $encoded_stream;
-
-    if ($target_format eq 'msgpack') {
-        require Data::MessagePack;
-        my $mp_engine = Data::MessagePack->new();
-        $encoded_stream = $mp_engine->pack($response_payload);
-    } else {
-        # Fallback to standard clean JSON serialization formats
-        my $json_engine = JSON::XS->new->utf8;
-        $json_engine->pretty(1) if $pretty_print;
-        $encoded_stream = $json_engine->encode($response_payload);}
-        # Stream the encoded block out to the designated destination target channels
-        if ($target_type eq 'stdout' || $target_name eq '-') {
-          if ($target_format eq 'msgpack') {
-            binmode(STDOUT, ':raw');
-          } else {
-            binmode(STDOUT, ':utf8');
           }
-          print STDOUT $encoded_stream;
-        } else {
-          open my $out_fh, ">", $target_name or do {
-            print STDERR "Error [Core]: Cannot write output file target channel '$target_name': $!\n";
-            return 1;
+        } catch {
+          $exit_status = 1;
+          $response_payload->{success} = 0;
+          $response_payload->{error} = {
+            component => 'Core',
+            message   => "YAML configuration blueprint parsing validation failure: $_"
           };
-          if ($target_format eq 'msgpack') {
-            binmode($out_fh, ':raw');
-          } else {
-            binmode($out_fh, ':encoding(utf8)');
+        };
+      }
+    }
+  }
+
+  # 4. Initialize virtual database workspace and execute processing pipelines
+  if ($exit_status == 0) {
+    my $dbh;
+      try {
+        # Spin up the volatile relational scratchpad environment
+        $dbh = DBI->connect(
+          "dbi:SQLite:dbname=:memory:", "", "", {
+            RaiseError     => 1, # Throws exceptions handled natively via Try::Tiny
+            PrintError     => 0, # Quiet down core logging channels to prevent interface noise
+            AutoCommit     => 1,
+            sqlite_unicode => 1, # Force native multi-byte encoding configurations
           }
-          print $out_fh $encoded_stream;close $out_fh;
+        );
+
+        # OPTIMIZATION: Fine-tune SQLite performance properties for ultra-fast in-memory operations
+        $dbh->do("PRAGMA synchronous = OFF");
+        $dbh->do("PRAGMA journal_mode = OFF");
+        $dbh->do("PRAGMA temp_store = MEMORY");
+        $dbh->do("PRAGMA cache_size = -2000");
+
+        # 5. Connect and initialize extension plugins workspace functions
+        my $plugin_mgr = App::DataFactory::PluginManager->new();
+        my $plugin_res = $plugin_mgr->register_all_plugins($dbh);
+        if (ref($plugin_res) eq 'App::DataFactory::Exception') {
+          die $plugin_res->as_string;
         }
-        return $exit_status;
+
+        # 6. Chain custom transformation structures into memory-mapped pipeline routes
+        if (defined $config->{pipelines}) {
+          my $compiler = App::DataFactory::PipelineCompiler->new();
+          my $compile_res = $compiler->compile_and_register_pipelines($dbh, $config->{pipelines});
+          if (ref($compile_res) eq 'App::DataFactory::Exception') {
+            die $compile_res->as_string;
+          }
+        }
+
+        # 7. EXTRACT PHASE: Populate database structures using secure parameters bindings
+        if (defined $config->{extract}) {
+          my $extractor = App::DataFactory::Extractor->new();
+          foreach my $source_node (@{$config->{extract}}) {
+            my $extract_res;
+
+            # Check if monolithic streaming environment has passed inline data arrays inside payload
+            if ($is_pure_stdin_mode && exists $config->{_inline_data_payload}{$source_node->{id}}) {
+              my $inline_data = $config->{_inline_data_payload}{$source_node->{id}};
+              $extract_res = $extractor->load_inline_json_source($dbh, $source_node, $inline_data);
+            } else {
+              $extract_res = $extractor->load_source($dbh, $source_node);
+            }
+
+            if (ref($extract_res) eq 'App::DataFactory::Exception') {
+              die $extract_res->as_string;
+            }
+          }
+        }
+
+        # 8. TRANSFORM PHASE: Run declarative relational workspace mapping transformations
+        if (defined $config->{transform}) {
+          foreach my $transform_node (@{$config->{transform}}) {
+            my $table_id  = $transform_node->{id};
+            my $sql_query = $transform_node->{query};
+
+            # Safely compile a destination view table out of custom processing definitions
+            my $composed_sql = sprintf("CREATE TABLE %s AS %s", $dbh->quote_identifier($table_id), $sql_query);
+            $dbh->do($composed_sql);
+          }
+        }
+
+        # 9. LOAD PHASE: Prepare records from compiled transformation view
+        if (defined $config->{load} && ref($config->{load}) eq 'ARRAY' && @{$config->{load}}) {
+          my $load_node = $config->{load}->[0];
+
+          $target_format = lc($load_node->{format} // 'json');
+          $target_type   = lc($load_node->{type}   // 'stdout');
+          $target_name   = $load_node->{name}      // '-';
+          $pretty_print  = $load_node->{pretty}    // 0;
+          $target_layout = lc($load_node->{layout} // 'object');
+
+          my $source_id = $load_node->{source_id};
+          if (defined $source_id) {
+          my $fetch_sql = sprintf("SELECT * FROM %s", $dbh->quote_identifier($source_id));
+
+          # High-speed streaming handle allocation
+          my $sth_fetch = $dbh->prepare($fetch_sql);
+          $sth_fetch->execute();
+
+          if ($target_format eq 'csv') {
+            # CSV bulk pipeline: fetch all rows at once and encode in a single pass
+            require Text::CSV_XS;
+
+            my $csv      = Text::CSV_XS->new({ binary => 1, auto_diag => 1, eol => "\n" });
+            my $all_rows = $sth_fetch->fetchall_arrayref();
+            my $buffer   = '';
+
+            open my $fh, '>', \$buffer or die "Cannot open in-memory buffer: $!";
+            binmode($fh, ':utf8');
+
+            $csv->print($fh, $sth_fetch->{NAME});
+            $csv->print($fh, $_) for @$all_rows;
+
+            close $fh;
+            ##$encoded_stream = Encode::encode('UTF-8', $buffer);
+            $encoded_stream = $buffer;
+          } else {
+            # Memory block allocation for structured API layouts (JSON, JSONL, MsgPack)
+            # FIXED: Using {} instead of { Slice => {} } for strict SQLite driver compliance
+            my $raw_rows = $sth_fetch->fetchall_arrayref({});
+
+            if ($target_layout eq 'matrix' && @$raw_rows) {
+              my @headers = sort keys %{$raw_rows->[0]};
+              my @matrix_rows;
+              foreach my $row (@$raw_rows) {
+                push @matrix_rows, [ map { $row->{$_} } @headers ];
+              }
+              $response_payload->{data} = {
+                columns => \@headers,
+                rows    => \@matrix_rows,
+              };
+            } else {
+              $response_payload->{data} = $raw_rows;
+            }
+          }
+        } else {
+          die "Missing 'source_id' parameter configuration inside the load profile block descriptor.";
+        }
       }
 
-1;
+    } catch {
+      $exit_status = 1;
+      $response_payload->{success} = 0;
+      $response_payload->{error}   = { component => 'PipelineEngine', message => "$_" };
+    };
 
-__END__
+    if (defined $dbh) {
+      $dbh->disconnect();
+    }
+  }
+
+  # 11. API VALIDATION & SERIALIZATION PHASE
+  # BLOCK TABULAR FORMATS FROM STDOUT STREAMING
+  if ($target_type eq 'stdout' || $target_name eq '-') {
+    if ($target_format eq 'csv' || $target_format eq 'xml') {
+      $exit_status = 1;
+      $response_payload->{success} = 0;
+      $response_payload->{data}    = undef;
+      $response_payload->{error}   = {
+        component => 'Core',
+        message   => "Streaming raw tabular formats ($target_format) directly to STDOUT is disabled. " .
+          "Please use a physical file, or switch to 'json', 'jsonl' or 'msgpack'."
+      };
+      $target_format = 'json';
+    }
+  }
+
+  # SERIALIZATION ROUTER (CSV is already processed above in Phase 9 for maximum speed)
+  if (!defined $encoded_stream) {
+    if ($target_format eq 'msgpack') {
+      require Data::MessagePack;
+      my $mp_engine = Data::MessagePack->new();
+
+      if (!$response_payload->{success}) {
+        $encoded_stream = $mp_engine->pack($response_payload);
+      } elsif ($target_layout eq 'matrix') {
+        my $schema_block = $mp_engine->pack({ success => 1, type => 'schema', columns => $response_payload->{data}->{columns} });
+        my $data_blocks = '';
+        foreach my $row (@{$response_payload->{data}->{rows}}) {
+          $data_blocks .= $mp_engine->pack({ success => 1, type => 'row', row => $row });
+        }
+        $encoded_stream = $schema_block . $data_blocks;
+      } else {
+        $encoded_stream = $mp_engine->pack($response_payload);
+      }
+    } elsif ($target_format eq 'jsonl') {
+      my $json_engine = JSON::XS->new->utf8;
+      if (!$response_payload->{success}) {
+        $encoded_stream = $json_engine->encode($response_payload) . "\n";
+      } else {
+        my $data_part = $response_payload->{data};
+        my @lines;
+
+        if ($target_layout eq 'matrix') {
+          push @lines, $json_engine->encode({ success => 1, type => 'schema', columns => $data_part->{columns} });
+          foreach my $row (@{$data_part->{rows}}) {
+            push @lines, $json_engine->encode({ success => 1, type => 'row', row => $row });
+          }
+        } else {
+          foreach my $row (@$data_part) {
+            push @lines, $json_engine->encode({ success => 1, type => 'row', row => $row });
+          }
+        }
+        $encoded_stream = join('', map { $_ . "\n" } @lines);
+      }
+    } elsif ($target_format eq 'xml') {
+      require XML::Simple;
+      my $xml = XML::Simple->new(RootName => 'response');
+      $encoded_stream = $xml->XMLout($response_payload);
+    } else {
+      # Standard monolithic JSON payload
+      my $json_engine = JSON::XS->new->utf8;
+      $json_engine->pretty(1) if $pretty_print;
+      $encoded_stream = $json_engine->encode($response_payload);
+    }
+  }
+
+  # 12. STREAM ENGINE OUTBOUND ROUTING
+  if ($target_type eq 'stdout' || $target_name eq '-') {
+    binmode(STDOUT, ':raw');
+    print STDOUT $encoded_stream;
+  } else {
+    open my $out_fh, ">", $target_name or do {
+      print STDERR "Error [Core]: Cannot write output file target channel '$target_name': $!\n";
+      return 1;
+    };
+      binmode($out_fh, ':raw');
+      print $out_fh $encoded_stream;
+      close $out_fh;
+  }
+
+  return $exit_status;
+}
+
+1;
 
 =pod
 
